@@ -1,0 +1,51 @@
+name: CI
+on:
+  repository_dispatch:
+    types: [ImagePushed]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    
+    - name: Check variables
+      env:
+        PAYLOAD_CONTEXT: ${{ toJson(github.event.client_payload.data) }}
+      run: |
+          echo "::set-env name=repo_name::${{ github.event.client_payload.data.target.repository }}"
+          echo "::set-env name=repo_version::${{ github.event.client_payload.data.target.tag }}"
+          echo "::set-env name=image_name::${{ github.event.client_payload.data.target.repository }}:${{ github.event.client_payload.data.target.tag }}"
+          
+    - name: Set Context for Azure Kubernetes Cluster using azure/aks-set-context@v1 action
+      uses: azure/aks-set-context@v1
+      with:
+        creds: '${{ secrets.AZURE_CREDENTIALS }}'
+        cluster-name: k8cluster3
+        resource-group: PythonSdk
+    
+    - uses: Azure/k8s-create-secret@v1
+      with:
+        container-registry-url: acrc2zegvu7zemng.azurecr.io
+        container-registry-username: ${{ secrets.REGISTRY_USERNAME }}
+        container-registry-password: ${{ secrets.REGISTRY_PASSWORD }}
+        secret-name: demo-k8s-secret
+
+    - uses: azure/k8s-bake@v1
+      with:
+        renderEngine: 'helm2'
+        helmChart: './charts/'
+        overrideFiles: './charts/values.yaml'
+        overrides: |     
+          image.repository: ${{ env.repo_name }}
+          image.tag: ${{ env.repo_version }}
+        releaseName: test
+      id: bake
+
+    - uses: Azure/k8s-deploy@v1
+      with:
+        manifests: ${{ steps.bake.outputs.manifestsBundle }}
+        images: |
+          ${{ env.image_name }}
+        imagepullsecrets: |
+          demo-k8s-secret
